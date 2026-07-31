@@ -104,6 +104,7 @@ completa con comentarios. Las que más importan:
 | `TRACK_TTL` | Segundos sin ver a alguien antes de olvidarlo. |
 | `IMGSZ` + `NCNN_MODEL_DIR` | Tamaño del modelo. Tienen que coincidir. |
 | `MOTION_ENABLED` | Gate de movimiento. Dejar en `true` en equipos lentos. |
+| `LOG_LEVEL` | `DEBUG` agrega la latencia de cada análisis. |
 | `SHOW_VIDEO` | Ventana de video. `false` en equipos sin escritorio. |
 
 ### Calibrar el recuadro
@@ -142,10 +143,21 @@ uv run python main.py
 Salida normal:
 
 ```
-[init] cargando yolo11n_ncnn_192 (NCNN, imgsz=192, 4 hilos)
-[init] recorte de analisis: 180x337 px en (410,23)
-[stream] conectado
-[alerta] persona 1 llevaba 3.1s en la puerta
+2026-07-31 18:53:06 INFO viewcam: cargando yolo11n_ncnn_192 (NCNN, imgsz=192, 4 hilos)
+2026-07-31 18:53:07 INFO viewcam: recorte de analisis: 180x337 px en (410,23)
+2026-07-31 18:53:07 INFO viewcam: dwell=3.0s intervalo=1.0s ttl=5.0s gate_movimiento=True
+2026-07-31 18:53:08 INFO viewcam: stream conectado
+2026-07-31 18:54:12 INFO viewcam: persona 1 llevaba 3.1s en la puerta, avisando
+2026-07-31 18:54:13 INFO viewcam: alerta enviada en 0.8s
+```
+
+Bajo systemd el timestamp se omite, porque `journalctl` ya pone el suyo.
+
+Con `LOG_LEVEL=DEBUG` se agrega una línea por análisis con la latencia real y los
+ids detectados — es la forma de ver si el equipo sigue el ritmo de la cámara:
+
+```
+DEBUG viewcam: analisis en 412 ms, 1 persona(s), ids=[1]
 ```
 
 Reconecta solo si se cae el stream, y sale limpio con `SIGINT`/`SIGTERM`.

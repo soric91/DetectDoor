@@ -10,7 +10,9 @@ Tres optimizaciones para el A53:
   3. Tracker IoU propio, en vez del ByteTrack de ultralytics.
 """
 
+import logging
 import os
+import sys
 import time
 import threading
 import signal
@@ -22,6 +24,23 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger("viewcam")
+
+
+def configurar_log():
+    """Log a stdout. Bajo systemd se omite el timestamp: journalctl ya pone uno."""
+    bajo_systemd = "JOURNAL_STREAM" in os.environ
+    formato = "%(levelname)s %(name)s: %(message)s"
+    if not bajo_systemd:
+        formato = "%(asctime)s " + formato
+
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format=formato,
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
 
 
 def env_str(name, default=None):
@@ -99,21 +118,24 @@ def enviar_alerta(frame):
     """Envia el frame limpio (sin recuadro) a Telegram en segundo plano."""
     ok, buffer = cv2.imencode(".jpg", frame)
     if not ok:
-        print("[telegram] no se pudo codificar el frame")
+        log.error("no se pudo codificar el frame para enviar")
         return
 
     def worker(jpg_bytes):
         try:
+            envio = time.monotonic()
             response = requests.post(
                 f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendPhoto",
                 data={"chat_id": CHAT_ID, "caption": MENSAJE},
                 files={"photo": ("puerta.jpg", jpg_bytes, "image/jpeg")},
                 timeout=15,
             )
-            if response.status_code != 200:
-                print(f"[telegram] error {response.status_code}: {response.text}")
+            if response.status_code == 200:
+                log.info("alerta enviada en %.1fs", time.monotonic() - envio)
+            else:
+                log.error("telegram respondio %s: %s", response.status_code, response.text)
         except requests.RequestException as exc:
-            print(f"[telegram] fallo el envio: {exc}")
+            log.error("fallo el envio a telegram: %s", exc)
 
     threading.Thread(target=worker, args=(buffer.tobytes(),), daemon=True).start()
 
@@ -344,20 +366,24 @@ def mostrar(frame, cajas):
 
 
 def main():
+    configurar_log()
     corriendo = {"activo": True}
 
     def parar(signum, frame):
+        log.info("recibida senal %s, cerrando", signal.Signals(signum).name)
         corriendo["activo"] = False
 
     signal.signal(signal.SIGINT, parar)
     signal.signal(signal.SIGTERM, parar)
 
-    print(f"[init] cargando {MODEL_DIR} (NCNN, imgsz={IMGSZ}, {NCNN_THREADS} hilos)")
+    log.info("cargando %s (NCNN, imgsz=%d, %d hilos)", MODEL_DIR, IMGSZ, NCNN_THREADS)
     detector = Detector()
     tracker = Tracker()
     gate = GateMovimiento()
     cx1, cy1, cx2, cy2 = recorte_roi()
-    print(f"[init] recorte de analisis: {cx2 - cx1}x{cy2 - cy1} px en ({cx1},{cy1})")
+    log.info("recorte de analisis: %dx%d px en (%d,%d)", cx2 - cx1, cy2 - cy1, cx1, cy1)
+    log.info("dwell=%.1fs intervalo=%.1fs ttl=%.1fs gate_movimiento=%s",
+             DWELL_SECONDS, ANALYSIS_INTERVAL, TRACK_TTL, MOTION_ENABLED)
 
     # track_id -> {"desde": primer instante dentro del recuadro,
     #              "avisado": ya se envio la alerta}
@@ -371,14 +397,14 @@ def main():
         if cap is None:
             cap = abrir_stream()
             if cap is None:
-                print(f"[stream] sin conexion, reintento en {RECONNECT_SECONDS}s")
+                log.warning("sin conexion al stream, reintento en %.0fs", RECONNECT_SECONDS)
                 time.sleep(RECONNECT_SECONDS)
                 continue
-            print("[stream] conectado")
+            log.info("stream conectado")
 
         ret, frame = cap.read()
         if not ret:
-            print("[stream] perdido, reconectando...")
+            log.warning("stream perdido, reconectando")
             cap.release()
             cap = None
             tracker.reset()
@@ -422,15 +448,21 @@ def main():
         ultimo_analisis = ahora
 
         # Detectar sobre el recorte y trasladar las coordenadas al frame completo
+        crudas = detector.detect(recorte)
         detecciones = [
-            (x1 + cx1, y1 + cy1, x2 + cx1, y2 + cy1)
-            for x1, y1, x2, y2, _ in detector.detect(recorte)
+            (x1 + cx1, y1 + cy1, x2 + cx1, y2 + cy1) for x1, y1, x2, y2, _ in crudas
         ]
         seguidas = tracker.update(detecciones, ahora)
         avisar, ultimas_cajas = evaluar_dwell(seguidas, personas, tracker.tracks, ahora)
 
+        # Con LOG_LEVEL=DEBUG se ve la latencia real de cada analisis, util para
+        # ajustar ANALYSIS_INTERVAL, DWELL_SECONDS y TRACK_TTL.
+        log.debug("analisis en %.0f ms, %d persona(s), ids=%s",
+                  (time.monotonic() - ahora) * 1000, len(seguidas),
+                  [t[4] for t in seguidas])
+
         for track_id, permanencia in avisar:
-            print(f"[alerta] persona {track_id} llevaba {permanencia:.1f}s en la puerta")
+            log.info("persona %d llevaba %.1fs en la puerta, avisando", track_id, permanencia)
             enviar_alerta(frame_limpio)
 
         if SHOW_VIDEO and not mostrar(frame, ultimas_cajas):
@@ -440,7 +472,7 @@ def main():
         cap.release()
     if SHOW_VIDEO:
         cv2.destroyAllWindows()
-    print("[fin] detenido")
+    log.info("detenido")
 
 
 if __name__ == "__main__":

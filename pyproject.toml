@@ -1,0 +1,23 @@
+[project]
+name = "viewcam"
+version = "0.1.0"
+description = "Deteccion de personas en la puerta con alerta por Telegram"
+readme = "README.md"
+# El equipo de destino (IOT-GATE-iMX8) suele traer un Python mas viejo que el
+# de desarrollo. Mantener el minimo bajo para no bloquear el deploy.
+requires-python = ">=3.10"
+# Runtime del equipo: liviano, sin torch.
+dependencies = [
+    "ncnn>=1.0.20260526",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+]
+
+# ultralytics arrastra torch y solo se necesita para exportar el modelo a NCNN.
+# NO instalar esto en el equipo:
+#   uv sync                     -> runtime (equipo)
+#   uv sync --group export      -> + exportador (maquina de desarrollo)
+[dependency-groups]
+export = ["ultralytics>=8.4.114"]
